@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import java.net.URI
-import kotlin.math.sign
 
 class MainViewModel(
     private val repository: StreamRepository,

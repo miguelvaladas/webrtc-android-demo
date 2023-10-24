@@ -16,7 +16,7 @@ import javax.websocket.MessageHandler
 import javax.websocket.Session
 
 
-class WebRtcClient(context: Context) {
+class WebRtcClient(private val context: Context) {
     private val eglBaseContext: EglBase.Context
     private val factory: PeerConnectionFactory
     private var signalingUrl: URI? = null
@@ -24,6 +24,7 @@ class WebRtcClient(context: Context) {
     private var peerConnection: PeerConnection? = null
     private var socket: Session? = null
     private var signalingChannel: SignalingChannel? = null
+    private var localVideoRenderer: SurfaceViewRenderer? = null
 
     init {
         PeerConnectionFactory.initialize(
@@ -41,9 +42,6 @@ class WebRtcClient(context: Context) {
             .setVideoEncoderFactory(defaultVideoEncoderFactory)
             .setVideoDecoderFactory(defaultVideoDecoderFactory)
             .createPeerConnectionFactory()
-
-        startLocalMedia()
-        createPeerConnection()
     }
 
     fun setSignalingUrl(url: URI) {
@@ -55,7 +53,15 @@ class WebRtcClient(context: Context) {
         updateIceServers(signalingChannel.iceServers)
     }
 
+    fun setLocalVideoRenderer(renderer: SurfaceViewRenderer) {
+        localVideoRenderer = renderer
+        localVideoRenderer?.init(eglBaseContext, null)
+        localVideoRenderer?.setMirror(true)
+    }
+
     fun startConnection() {
+        startLocalMedia()
+        createPeerConnection()
         signalingUrl?.let {
             connectWebSocket(it)
             createOffer()
@@ -97,7 +103,10 @@ class WebRtcClient(context: Context) {
                             when (message) {
                                 is String -> onSignalingMessageReceived(message)
                                 is Boolean -> Log.i(TAG, "Received Boolean message: $message")
-                                else -> Log.w(TAG, "Unhandled message type: ${message?.javaClass?.name}")
+                                else -> Log.w(
+                                    TAG,
+                                    "Unhandled message type: ${message?.javaClass?.name}"
+                                )
                             }
                         })
                     }
@@ -167,11 +176,20 @@ class WebRtcClient(context: Context) {
     }
 
     private fun startLocalMedia() {
-        val videoCapturer = createCameraCapturer(Camera1Enumerator(false))
+        val videoCapturer = createCameraCapturer(Camera2Enumerator(context))
+
+        val surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBaseContext)
         val videoSource = factory.createVideoSource(videoCapturer.isScreencast)
+
+        videoCapturer.initialize(surfaceTextureHelper, context, videoSource.capturerObserver)
+        videoCapturer.startCapture(1280, 720, 30)
+
         val videoTrack = factory.createVideoTrack("100", videoSource)
+        videoTrack.addSink(localVideoRenderer)
+
         localStream = factory.createLocalMediaStream("1")
         localStream?.addTrack(videoTrack)
+
         peerConnection?.addStream(localStream)
     }
 
@@ -196,7 +214,22 @@ class WebRtcClient(context: Context) {
     }
 
     private fun createPeerConnection(rtcConfig: PeerConnection.RTCConfiguration? = null) {
-        val config = rtcConfig ?: PeerConnection.RTCConfiguration(ArrayList())
+        val defaultIceServers = mutableListOf<PeerConnection.IceServer>()
+        defaultIceServers.add(
+            PeerConnection.IceServer.builder("stun:stun.kinesisvideo.eu-central-1.amazonaws.com:443")
+                .createIceServer()
+        )
+
+        signalingChannel?.iceServers?.forEach { iceServer ->
+            defaultIceServers.add(
+                PeerConnection.IceServer.builder(iceServer.uris.joinToString(","))
+                    .setUsername(iceServer.username.trim())
+                    .setPassword(iceServer.password.trim())
+                    .createIceServer()
+            )
+        }
+
+        val config = rtcConfig ?: PeerConnection.RTCConfiguration(defaultIceServers)
         val observer = object : PeerConnection.Observer {
             override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
             override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}

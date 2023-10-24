@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
@@ -16,20 +17,25 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.miguelvaladas.webrtcexample.data.stream.repository.StreamRepository
 import com.miguelvaladas.webrtcexample.stream.WebRtcClient
 import com.miguelvaladas.webrtcexample.ui.theme.WebRTCExampleTheme
+import org.webrtc.SurfaceViewRenderer
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var streamRepository: StreamRepository
     private lateinit var webRtcClient: WebRtcClient
     private lateinit var mainViewModel: MainViewModel
+    private lateinit var localVideoView: SurfaceViewRenderer
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,7 +43,9 @@ class MainActivity : ComponentActivity() {
         checkPermission(this)
 
         streamRepository = StreamRepository()
+        localVideoView = SurfaceViewRenderer(this)
         webRtcClient = WebRtcClient(this)
+        webRtcClient.setLocalVideoRenderer(localVideoView)
         mainViewModel = MainViewModel(streamRepository, webRtcClient)
 
         setContent {
@@ -46,6 +54,12 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
+                    AndroidView({ localVideoView }) {
+                        it.layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
                     StartStreamButton(mainViewModel)
                 }
             }
