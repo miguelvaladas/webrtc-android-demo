@@ -14,7 +14,10 @@ import javax.websocket.EndpointConfig
 import javax.websocket.MessageHandler
 import javax.websocket.Session
 
-class WebRtcClient(private val context: Context, private val localVideoRenderer: SurfaceViewRenderer) {
+class WebRtcClient(
+    private val context: Context,
+    private val localVideoRenderer: SurfaceViewRenderer
+) {
     private val eglBaseContext = EglBase.create().eglBaseContext
     private val factory: PeerConnectionFactory = createPeerConnectionFactory()
     private var signalingUrl: URI? = null
@@ -23,10 +26,35 @@ class WebRtcClient(private val context: Context, private val localVideoRenderer:
     private var socket: Session? = null
     private var signalingChannel: SignalingChannel? = null
     private var signalingListener: SignalingListener? = null
-
+    private var localVideoTrack: VideoTrack? = null
+    
     init {
         localVideoRenderer.init(eglBaseContext, null)
         initLocalMediaStream()
+        initializeSignalingListener()
+    }
+
+    private fun initializeSignalingListener() {
+        signalingListener = object : SignalingListener {
+            override fun onOfferReceived(offer: SessionDescription) {
+                peerConnection?.setRemoteDescription(
+                    CustomSdpObserver("setRemoteDescriptionOffer"),
+                    offer
+                )
+                createAnswer()
+            }
+
+            override fun onAnswerReceived(answer: SessionDescription) {
+                peerConnection?.setRemoteDescription(
+                    CustomSdpObserver("setRemoteDescriptionAnswer"),
+                    answer
+                )
+            }
+
+            override fun onIceCandidateReceived(candidate: IceCandidate) {
+                peerConnection?.addIceCandidate(candidate)
+            }
+        }
     }
 
     private fun createPeerConnectionFactory(): PeerConnectionFactory {
@@ -52,15 +80,8 @@ class WebRtcClient(private val context: Context, private val localVideoRenderer:
             videoCapturer.initialize(surfaceTextureHelper, context, videoSource.capturerObserver)
             videoCapturer.startCapture(1280, 720, 30)
 
-            val videoTrack = factory.createVideoTrack("100", videoSource)
-            localVideoRenderer?.let { renderer ->
-                videoTrack.addSink(renderer)
-            }
-
-            localStream = factory.createLocalMediaStream("KvsLocalStream").apply {
-                if (!addTrack(videoTrack)) {
-                    Log.e(TAG, "Add video track failed")
-                }
+            localVideoTrack = factory.createVideoTrack("100", videoSource).apply {
+                addSink(localVideoRenderer)
             }
         } else {
             Log.e(TAG, "Failed to create video capturer")
@@ -82,31 +103,9 @@ class WebRtcClient(private val context: Context, private val localVideoRenderer:
         this.signalingChannel = signalingChannel
         updateIceServers(signalingChannel.iceServers)
     }
-/*
-    fun setLocalVideoRenderer(renderer: SurfaceViewRenderer?) {
-        localVideoRenderer = renderer
-        localVideoRenderer?.init(eglBaseContext, null)
-        localVideoRenderer?.setMirror(true)
-    }
-
- */
 
     fun startConnection() {
         createPeerConnection()
-        signalingListener = object : SignalingListener {
-            override fun onOfferReceived(offer: SessionDescription) {
-                peerConnection?.setRemoteDescription(CustomSdpObserver("setRemoteDescriptionOffer"), offer)
-                createAnswer()
-            }
-
-            override fun onAnswerReceived(answer: SessionDescription) {
-                peerConnection?.setRemoteDescription(CustomSdpObserver("setRemoteDescriptionAnswer"), answer)
-            }
-
-            override fun onIceCandidateReceived(candidate: IceCandidate) {
-                peerConnection?.addIceCandidate(candidate)
-            }
-        }
         signalingUrl?.let {
             connectWebSocket(it)
             createOffer()
@@ -126,7 +125,16 @@ class WebRtcClient(private val context: Context, private val localVideoRenderer:
                 .setPassword(server.password)
                 .createIceServer()
         }
-        createPeerConnection(PeerConnection.RTCConfiguration(rtcIceServers))
+
+        val rtcConfig = PeerConnection.RTCConfiguration(rtcIceServers)
+        rtcConfig.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+        rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+        rtcConfig.continualGatheringPolicy =
+            PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+        rtcConfig.keyType = PeerConnection.KeyType.ECDSA
+        rtcConfig.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
+        rtcConfig.tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
+        createPeerConnection(rtcConfig)
     }
 
     private fun connectWebSocket(signalingUrl: URI) {
@@ -161,6 +169,7 @@ class WebRtcClient(private val context: Context, private val localVideoRenderer:
             override fun onIceCandidate(candidate: IceCandidate?) {
                 candidate?.let {
                     Log.d(TAG, "New ICE candidate: ${candidate.sdp}")
+                    signalingListener?.onIceCandidateReceived(it)
                     sendIceCandidate(candidate)
                 }
             }
@@ -195,8 +204,8 @@ class WebRtcClient(private val context: Context, private val localVideoRenderer:
             rtcConfig ?: PeerConnection.RTCConfiguration(emptyList()),
             observer
         )
-        localStream?.let { stream ->
-            peerConnection?.addStream(stream)
+        localVideoTrack?.let { track ->
+            peerConnection?.addTrack(track)
         }
     }
 
@@ -251,40 +260,38 @@ class WebRtcClient(private val context: Context, private val localVideoRenderer:
     private fun handleSignalingMessage(message: String) {
         val jsonObject = JSONObject(message)
         when (jsonObject.getString("type")) {
-            "offer" -> handleOfferMessage(jsonObject)
-            "answer" -> handleAnswerMessage(jsonObject)
-            "candidate" -> handleIceCandidateMessage(jsonObject)
+            "offer" -> signalingListener?.onOfferReceived(
+                SessionDescription(
+                    SessionDescription.Type.OFFER,
+                    jsonObject.getString("sdp")
+                )
+            )
+
+            "answer" -> signalingListener?.onAnswerReceived(
+                SessionDescription(
+                    SessionDescription.Type.ANSWER,
+                    jsonObject.getString("sdp")
+                )
+            )
+
+            "candidate" -> {
+                val candidate = IceCandidate(
+                    jsonObject.getString("sdpMid"),
+                    jsonObject.getInt("sdpMLineIndex"),
+                    jsonObject.getString("candidate")
+                )
+                signalingListener?.onIceCandidateReceived(candidate)
+            }
         }
-    }
-
-    private fun handleOfferMessage(jsonObject: JSONObject) {
-        val sdp = jsonObject.getString("sdp")
-        val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, sdp)
-        signalingListener?.onOfferReceived(sessionDescription)
-    }
-
-    private fun handleAnswerMessage(jsonObject: JSONObject) {
-        val sdp = jsonObject.getString("sdp")
-        val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, sdp)
-        signalingListener?.onAnswerReceived(sessionDescription)
-    }
-
-    private fun handleIceCandidateMessage(jsonObject: JSONObject) {
-        val sdpMid = jsonObject.getString("sdpMid")
-        val sdpMLineIndex = jsonObject.getInt("sdpMLineIndex")
-        val candidate = jsonObject.getString("candidate")
-        val iceCandidate = IceCandidate(sdpMid, sdpMLineIndex, candidate)
-        signalingListener?.onIceCandidateReceived(iceCandidate)
     }
 
     inner class CustomSdpObserver(private val operation: String) : SdpObserver {
         override fun onCreateSuccess(sessionDescription: SessionDescription) {
             Log.d(TAG, "$operation: onCreateSuccess")
             peerConnection?.setLocalDescription(this, sessionDescription)
-            if (operation == "createOffer") {
-                sendOffer(sessionDescription)
-            } else if (operation == "createAnswer") {
-                sendAnswer(sessionDescription)
+            when (operation) {
+                "createOffer" -> sendOffer(sessionDescription)
+                "createAnswer" -> sendAnswer(sessionDescription)
             }
         }
 
