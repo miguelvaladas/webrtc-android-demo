@@ -6,7 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.miguelvaladas.webrtcexample.data.stream.model.Credentials
 import com.miguelvaladas.webrtcexample.data.stream.model.Stream
 import com.miguelvaladas.webrtcexample.data.stream.repository.StreamRepository
-import com.miguelvaladas.webrtcexample.signer.AwsV4Signer
+import com.miguelvaladas.webrtcexample.signer.sign
 import com.miguelvaladas.webrtcexample.stream.WebRtcClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -59,30 +59,33 @@ class MainViewModel(
     }
 
     fun startStopStream() {
-        if (!_isStreaming.value) {
-            val signedUrl = signWssEndpoint(
-                stream.value?.signalingChannel?.masterEndpoint!!,
-                stream.value?.signalingChannel?.arn!!
-            )
-            Log.i(TAG, "uri: ${signedUrl.toASCIIString()}")
+        _stream.value?.let { stream ->
+            _credentials.value?.let { credentials ->
+                if (!_isStreaming.value) {
+                    stream.signalingChannel.masterEndpoint.let { masterEndpoint ->
+                        val signedUrl = signWssEndpoint(masterEndpoint, stream.signalingChannel.arn)
+                        Log.i(TAG, "uri: ${signedUrl.toASCIIString()}")
 
-            webRtcClient.setSignalingChannel(stream.value!!.signalingChannel)
-            webRtcClient.setSignalingUrl(signedUrl)
-            webRtcClient.startConnection()
-        } else {
-            webRtcClient.closeConnection()
-        }
-        _isStreaming.value = !_isStreaming.value
+                        webRtcClient.setSignalingChannel(stream.signalingChannel)
+                        webRtcClient.setSignalingUrl(signedUrl)
+                        webRtcClient.startConnection()
+                    }
+                } else {
+                    webRtcClient.closeConnection()
+                }
+                _isStreaming.value = !_isStreaming.value
+            }
+        } ?: Log.e(TAG, "Stream or Credentials are null")
     }
 
     private fun signWssEndpoint(endpoint: String, channelArn: String): URI {
         val mEndpoint = "$endpoint?X-Amz-ChannelARN=$channelArn"
 
-        return AwsV4Signer.sign(
+        return sign(
             URI.create(mEndpoint),
-            credentials.value?.accessKey,
-            credentials.value?.secretKey,
-            credentials.value?.token,
+            credentials.value?.accessKey!!,
+            credentials.value?.secretKey!!,
+            credentials.value?.token!!,
             URI.create(endpoint),
             "eu-central-1"
         )

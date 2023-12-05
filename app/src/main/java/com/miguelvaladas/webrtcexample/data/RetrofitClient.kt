@@ -9,12 +9,13 @@ import java.util.concurrent.TimeUnit
 object RetrofitClient {
 
     private val okHttpClient = OkHttpClient.Builder()
+        .hostnameVerifier { _, _ -> true }
         .readTimeout(15, TimeUnit.SECONDS)
         .connectTimeout(15, TimeUnit.SECONDS)
         .build()
 
     private val retrofit = Retrofit.Builder()
-        .baseUrl("https://rclive.pt/")
+        .baseUrl("https://rclive-microservice-loadbalancer-1371406789.eu-central-1.elb.amazonaws.com/")
         .addConverterFactory(GsonConverterFactory.create())
         .client(okHttpClient)
         .build()

@@ -6,12 +6,12 @@ plugins {
 
 android {
     namespace = "com.miguelvaladas.webrtcexample"
-    compileSdk = 33
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.miguelvaladas.webrtcexample"
         minSdk = 24
-        targetSdk = 33
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
 
@@ -57,6 +57,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.10.0")
 
     implementation("com.google.dagger:hilt-android:2.47")
+    implementation("androidx.camera:camera-view:1.3.0")
     kapt("com.google.dagger:hilt-compiler:2.47")
 
     implementation("org.apache.commons:commons-lang3:3.9")
@@ -65,11 +66,15 @@ dependencies {
 
     implementation("com.google.guava:guava:28.1-android")
 
+    implementation("org.awaitility:awaitility:3.0.0")
+
     implementation("org.slf4j:slf4j-api:1.7.29")
 
     implementation("org.webrtc:google-webrtc:1.0.32006")
 
     implementation("com.amazonaws:aws-android-sdk-kinesisvideo:2.49.0")
+
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
 
     implementation("org.glassfish.tyrus.bundles:tyrus-standalone-client:1.15")
 
