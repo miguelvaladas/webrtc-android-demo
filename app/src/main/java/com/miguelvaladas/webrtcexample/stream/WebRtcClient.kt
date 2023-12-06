@@ -8,12 +8,10 @@ import com.miguelvaladas.webrtcexample.data.stream.model.IceServer
 import com.miguelvaladas.webrtcexample.data.stream.model.SignalingChannel
 import jakarta.websocket.ClientEndpointConfig
 import jakarta.websocket.CloseReason
-import jakarta.websocket.DeploymentException
 import jakarta.websocket.Endpoint
 import jakarta.websocket.EndpointConfig
 import jakarta.websocket.MessageHandler
 import jakarta.websocket.Session
-import org.awaitility.Awaitility
 import org.glassfish.tyrus.client.ClientManager
 import org.glassfish.tyrus.client.ClientProperties
 import org.json.JSONObject
@@ -37,12 +35,11 @@ class WebRtcClient(
     private var localVideoTrack: VideoTrack? = null
     private val gson = Gson()
     private var signalingListener: SignalingListener? = null
-    private var session: Session? = null
     private var executorService: ExecutorService? = null
 
     private var recipientClientId: String = String()
     private val peerConnectionFoundMap = HashMap<String, PeerConnection?>()
-    private val pendingIceCandidatesMap = HashMap<String, Queue<IceCandidate>>()
+    private val pendingCustomIceCandidatesMap = HashMap<String, Queue<IceCandidate>>()
 
     init {
         localVideoRenderer.init(eglBaseContext, null)
@@ -138,12 +135,12 @@ class WebRtcClient(
         if (peerConnection != null) {
             peerConnection.addIceCandidate(iceCandidate)
         } else {
-            pendingIceCandidatesMap.getOrPut(clientId, ::LinkedList).add(iceCandidate)
+            pendingCustomIceCandidatesMap.getOrPut(clientId, ::LinkedList).add(iceCandidate)
         }
     }
 
     private fun handlePendingIceCandidates(clientId: String) {
-        pendingIceCandidatesMap[clientId]?.let { queue ->
+        pendingCustomIceCandidatesMap[clientId]?.let { queue ->
             while (queue.isNotEmpty()) {
                 peerConnectionFoundMap[clientId]?.addIceCandidate(queue.poll())
             }
@@ -251,17 +248,17 @@ class WebRtcClient(
         }
     }
 
-    private fun createIceCandidateMessage(iceCandidate: IceCandidate): AwsMessage {
-        return AwsMessage(
+    private fun createIceCandidateMessage(customIceCandidate: IceCandidate): Message {
+        return Message(
             action = "ICE_CANDIDATE",
             recipientClientId = String(),
             senderClientId = String(),
             messagePayload = String(
                 Base64.encode(
-                    IceCandidateMessage(
-                        iceCandidate.sdp,
-                        iceCandidate.sdpMid,
-                        iceCandidate.sdpMLineIndex
+                    CustomIceCandidate(
+                        customIceCandidate.sdp,
+                        customIceCandidate.sdpMid,
+                        customIceCandidate.sdpMLineIndex
                     ).toJson().toByteArray(),
                     Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
                 )
@@ -273,36 +270,32 @@ class WebRtcClient(
         return Gson().toJson(this)
     }
 
-    private data class IceCandidateMessage(
-        val candidate: String,
-        val sdpMid: String,
-        val sdpMLineIndex: Int
-    )
-
     fun startConnection() {
+        executorService = Executors.newFixedThreadPool(10)
         signalingUrl?.let {
             connectWebSocket(it)
         } ?: throw IllegalStateException("Signaling URL must be set before starting connection.")
     }
 
     fun closeConnection() {
-        peerConnection?.close()
-        socket?.close()
+        executorService?.submit {
+            peerConnection?.close()
+            socket?.close()
+            executorService!!.shutdown()
+        }
     }
 
     private fun connectWebSocket(signalingUrl: URI) {
-        executorService = Executors.newFixedThreadPool(10).apply {
-            submit {
-                try {
-                    val cec = ClientEndpointConfig.Builder.create().build()
-                    val clientManager = ClientManager.createClient()
-                    clientManager.properties[ClientProperties.LOG_HTTP_UPGRADE] = true
-                    signalingUrl.let {
-                        socket = clientManager.connectToServer(endpoint, cec, it)
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "WebSocket connection failed: ${e.message}")
+        executorService?.submit {
+            try {
+                val cec = ClientEndpointConfig.Builder.create().build()
+                val clientManager = ClientManager.createClient()
+                clientManager.properties[ClientProperties.LOG_HTTP_UPGRADE] = true
+                signalingUrl.let {
+                    socket = clientManager.connectToServer(endpoint, cec, it)
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "WebSocket connection failed: ${e.message}")
             }
         }
     }
@@ -312,12 +305,16 @@ class WebRtcClient(
     }
 
     private fun sendOffer(offer: SessionDescription) {
-        val json = JSONObject().apply {
-            put("type", "offer")
-            put("sdp", offer.description)
+        val offerPayload =
+            "{\"type\":\"offer\",\"sdp\":\"${offer.description.replace("\r\n", "\\r\\n")}\"}"
+        val encodedString =
+            Base64.encodeToString(offerPayload.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
+        val message = Message("SDP_OFFER", "", "", encodedString)
+
+        val jsonMessage = gson.toJson(message)
+        executorService?.submit {
+            socket?.basicRemote?.sendText(jsonMessage)
         }
-        Log.i(TAG, "sendOffer: offer: $json")
-        socket?.basicRemote?.sendText(json.toString())
     }
 
     private fun sendAnswer(answer: SessionDescription) {
@@ -328,7 +325,7 @@ class WebRtcClient(
         socket?.basicRemote?.sendText(json.toString())
     }
 
-    private fun sendIceCandidate(candidate: AwsMessage) {
+    private fun sendIceCandidate(candidate: Message) {
         executorService?.submit {
             if (candidate.action.equals("ICE_CANDIDATE", ignoreCase = true)) {
                 val jsonMessage = gson.toJson(candidate)
@@ -357,7 +354,7 @@ class WebRtcClient(
                 super.onClose(session, closeReason)
                 Log.d(
                     TAG,
-                    "Session ${session.requestURI}  closed with reason ${closeReason.reasonPhrase}"
+                    "onClose: Session ${session.requestURI}  closed with reason ${closeReason.toJson()}"
                 )
             }
 
