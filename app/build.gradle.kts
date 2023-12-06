@@ -76,7 +76,7 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
 
-    implementation("org.glassfish.tyrus.bundles:tyrus-standalone-client:1.15")
+    implementation("org.glassfish.tyrus.bundles:tyrus-standalone-client:2.1.3")
 
     implementation("androidx.core:core-ktx:1.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")

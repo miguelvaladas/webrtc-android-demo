@@ -1,10 +1,19 @@
 package com.miguelvaladas.webrtcexample.stream
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
 import com.google.gson.Gson
 import com.miguelvaladas.webrtcexample.data.stream.model.IceServer
 import com.miguelvaladas.webrtcexample.data.stream.model.SignalingChannel
+import jakarta.websocket.ClientEndpointConfig
+import jakarta.websocket.CloseReason
+import jakarta.websocket.DeploymentException
+import jakarta.websocket.Endpoint
+import jakarta.websocket.EndpointConfig
+import jakarta.websocket.MessageHandler
+import jakarta.websocket.Session
+import org.awaitility.Awaitility
 import org.glassfish.tyrus.client.ClientManager
 import org.glassfish.tyrus.client.ClientProperties
 import org.json.JSONObject
@@ -12,13 +21,8 @@ import org.webrtc.*
 import java.net.URI
 import java.util.LinkedList
 import java.util.Queue
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import javax.websocket.CloseReason
-import javax.websocket.Endpoint
-import javax.websocket.EndpointConfig
-import javax.websocket.MessageHandler
-import javax.websocket.Session
-import kotlin.math.log
 
 class WebRtcClient(
     private val context: Context,
@@ -33,6 +37,8 @@ class WebRtcClient(
     private var localVideoTrack: VideoTrack? = null
     private val gson = Gson()
     private var signalingListener: SignalingListener? = null
+    private var session: Session? = null
+    private var executorService: ExecutorService? = null
 
     private var recipientClientId: String = String()
     private val peerConnectionFoundMap = HashMap<String, PeerConnection?>()
@@ -68,7 +74,7 @@ class WebRtcClient(
             val surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBaseContext)
             val videoSource = factory.createVideoSource(videoCapturer.isScreencast)
             videoCapturer.initialize(surfaceTextureHelper, context, videoSource.capturerObserver)
-            videoCapturer.startCapture(1280, 720, 30)
+            videoCapturer.startCapture(1920, 1080, 30)
 
             localVideoTrack = factory.createVideoTrack("100", videoSource).apply {
                 addSink(localVideoRenderer)
@@ -100,7 +106,6 @@ class WebRtcClient(
 
             override fun onOfferReceived(offer: SessionDescription) {
                 peerConnection?.setRemoteDescription(CustomSdpObserver("setRemoteDesc"), offer)
-                createAnswer()
             }
 
             override fun onAnswerReceived(answer: SessionDescription) {
@@ -121,7 +126,6 @@ class WebRtcClient(
         )
         recipientClientId = evt.senderClientId
         handlePendingIceCandidates(recipientClientId)
-        createAnswer()
     }
 
     private fun handleIceCandidate(evt: AwsEvent) {
@@ -209,10 +213,8 @@ class WebRtcClient(
                 override fun onIceCandidate(candidate: IceCandidate?) {
                     candidate?.let {
                         Log.d(TAG, "New ICE candidate: ${candidate.sdp}")
-                        sendIceCandidate(candidate)
-                    }
-                    peerConnection?.let {
-                        addIceCandidate(candidate!!.sdp, candidate)
+                        val awsMessage = createIceCandidateMessage(candidate)
+                        sendIceCandidate(awsMessage)
                     }
                 }
 
@@ -249,6 +251,34 @@ class WebRtcClient(
         }
     }
 
+    private fun createIceCandidateMessage(iceCandidate: IceCandidate): AwsMessage {
+        return AwsMessage(
+            action = "ICE_CANDIDATE",
+            recipientClientId = String(),
+            senderClientId = String(),
+            messagePayload = String(
+                Base64.encode(
+                    IceCandidateMessage(
+                        iceCandidate.sdp,
+                        iceCandidate.sdpMid,
+                        iceCandidate.sdpMLineIndex
+                    ).toJson().toByteArray(),
+                    Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
+                )
+            ),
+        )
+    }
+
+    private fun Any.toJson(): String {
+        return Gson().toJson(this)
+    }
+
+    private data class IceCandidateMessage(
+        val candidate: String,
+        val sdpMid: String,
+        val sdpMLineIndex: Int
+    )
+
     fun startConnection() {
         signalingUrl?.let {
             connectWebSocket(it)
@@ -261,13 +291,18 @@ class WebRtcClient(
     }
 
     private fun connectWebSocket(signalingUrl: URI) {
-        Executors.newFixedThreadPool(10).submit {
-            try {
-                val clientManager = ClientManager.createClient()
-                clientManager.properties[ClientProperties.LOG_HTTP_UPGRADE] = true
-                socket = clientManager.connectToServer(endpoint, signalingUrl)
-            } catch (e: Exception) {
-                Log.e(TAG, "WebSocket connection failed: $e")
+        executorService = Executors.newFixedThreadPool(10).apply {
+            submit {
+                try {
+                    val cec = ClientEndpointConfig.Builder.create().build()
+                    val clientManager = ClientManager.createClient()
+                    clientManager.properties[ClientProperties.LOG_HTTP_UPGRADE] = true
+                    signalingUrl.let {
+                        socket = clientManager.connectToServer(endpoint, cec, it)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "WebSocket connection failed: ${e.message}")
+                }
             }
         }
     }
@@ -276,15 +311,12 @@ class WebRtcClient(
         peerConnection?.createOffer(CustomSdpObserver("createOffer"), MediaConstraints())
     }
 
-    private fun createAnswer() {
-        peerConnection?.createAnswer(CustomSdpObserver("createAnswer"), MediaConstraints())
-    }
-
     private fun sendOffer(offer: SessionDescription) {
         val json = JSONObject().apply {
             put("type", "offer")
             put("sdp", offer.description)
         }
+        Log.i(TAG, "sendOffer: offer: $json")
         socket?.basicRemote?.sendText(json.toString())
     }
 
@@ -296,27 +328,27 @@ class WebRtcClient(
         socket?.basicRemote?.sendText(json.toString())
     }
 
-    private fun sendIceCandidate(candidate: IceCandidate) {
-        val json = JSONObject().apply {
-            put("type", "candidate")
-            put("sdpMid", candidate.sdpMid)
-            put("sdpMLineIndex", candidate.sdpMLineIndex)
-            put("candidate", candidate.sdp)
+    private fun sendIceCandidate(candidate: AwsMessage) {
+        executorService?.submit {
+            if (candidate.action.equals("ICE_CANDIDATE", ignoreCase = true)) {
+                val jsonMessage = gson.toJson(candidate)
+                Log.d(TAG, "Sending JSON Message= $jsonMessage")
+                socket?.basicRemote?.sendText(jsonMessage)
+                Log.d(TAG, "Sent Ice candidate message")
+            }
         }
-        Log.i(TAG, "sendIceCandidate: IceCandidateJson: $json")
-        socket?.basicRemote?.sendText(json.toString())
     }
-
 
     private val endpoint: Endpoint by lazy {
         object : Endpoint() {
             override fun onOpen(session: Session, config: EndpointConfig?) {
+                Log.i(TAG, "onOpen: isSessionOpen: ${session.isOpen}")
                 Log.i(TAG, "onOpen: $session")
+
                 session.addMessageHandler(MessageHandler.Whole<Any> { message ->
-                    if(message is String)
+                    Log.i(TAG, "onOpen - received message: $message ")
+                    if (message is String)
                         handleSignalingMessage(message)
-                    else
-                        Log.i(TAG, "onOpen - received message: $message ")
                 })
                 createOffer()
             }
@@ -331,7 +363,7 @@ class WebRtcClient(
 
             override fun onError(session: Session, thr: Throwable) {
                 super.onError(session, thr)
-                Log.w(TAG,"onError: ${thr.printStackTrace()}")
+                Log.w(TAG, "onError: ${thr.printStackTrace()}")
             }
         }
     }
@@ -378,11 +410,6 @@ class WebRtcClient(
 
         override fun onSetSuccess() {
             Log.d(TAG, "$operation: onSetSuccess")
-            if (operation == "setRemoteDesc") {
-                if (peerConnection?.remoteDescription?.type == SessionDescription.Type.OFFER) {
-                    createAnswer()
-                }
-            }
         }
 
         override fun onCreateFailure(error: String?) {
@@ -407,5 +434,4 @@ class WebRtcClient(
     companion object {
         const val TAG = "WebRtcClient"
     }
-
 }
