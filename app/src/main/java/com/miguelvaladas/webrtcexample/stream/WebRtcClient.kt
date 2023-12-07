@@ -153,10 +153,9 @@ class WebRtcClient(
 
     fun setSignalingChannel(signalingChannel: SignalingChannel) {
         this.signalingChannel = signalingChannel
-        updateIceServers(signalingChannel.iceServers)
     }
 
-    private fun updateIceServers(iceServers: List<IceServer>) {
+    fun updateIceServers(iceServers: List<IceServer>) {
         Log.i(TAG, "updateIceServers: $iceServers")
 
         val rtcIceServers = iceServers.map { server ->
@@ -207,6 +206,7 @@ class WebRtcClient(
                     Log.d(TAG, "ICE gathering state changed: $iceGatheringState")
                 }
 
+                /// POSSIBLE ERROR
                 override fun onIceCandidate(candidate: IceCandidate?) {
                     candidate?.let {
                         Log.d(TAG, "New ICE candidate: ${candidate.sdp}")

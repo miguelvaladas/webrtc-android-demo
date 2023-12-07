@@ -60,7 +60,7 @@ class MainViewModel(
 
     fun startStopStream() {
         _stream.value?.let { stream ->
-            _credentials.value?.let { credentials ->
+            _credentials.value?.let {
                 if (!_isStreaming.value) {
                     stream.signalingChannel.masterEndpoint.let { masterEndpoint ->
                         val signedUrl = signWssEndpoint(masterEndpoint, stream.signalingChannel.arn)
@@ -68,6 +68,7 @@ class MainViewModel(
 
                         webRtcClient.setSignalingChannel(stream.signalingChannel)
                         webRtcClient.setSignalingUrl(signedUrl)
+                        webRtcClient.updateIceServers(stream.signalingChannel.iceServers)
                         webRtcClient.startConnection()
                     }
                 } else {
